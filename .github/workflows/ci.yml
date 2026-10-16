@@ -1,0 +1,77 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+          args: --build-tags integration
+
+  test:
+    name: unit (go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go: ["1.23", "1.24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - run: go build ./...
+      - run: go test -race -count=1 -coverprofile=coverage.out ./...
+      - run: go tool cover -func=coverage.out | tail -1
+
+  integration:
+    name: integration (real NATS JetStream)
+    runs-on: ubuntu-latest
+    env:
+      NATS_URL: nats://localhost:4222
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Start NATS JetStream container
+        # GitHub `services:` cannot pass server flags, and the stock image
+        # config does not enable JetStream, so the container is started here.
+        run: |
+          docker run -d --name nats -p 4222:4222 -p 8222:8222 nats:2.11-alpine -js -m 8222
+          for i in $(seq 1 30); do curl -fs 'localhost:8222/healthz?js-enabled-only=true' && break; sleep 1; done
+      - name: Saga, outbox, idempotency, retries, DLQ, tracing
+        run: go test -race -count=1 -tags integration -v ./test/integration/...
+      - name: Same suite against an embedded nats-server
+        run: NATS_URL= go test -race -count=1 -tags integration ./test/integration/...
+      - if: failure()
+        run: docker logs nats || true
+
+  e2e:
+    name: e2e (docker compose + Jaeger)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start the stack
+        run: docker compose up -d --build --wait --wait-timeout 180
+      - name: Smoke test (happy path, rejection, compensation, distributed trace)
+        run: ./scripts/smoke.sh
+      - if: always()
+        run: docker compose logs --no-color | tail -n 300
+      - if: always()
+        run: docker compose down -v

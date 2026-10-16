@@ -1,0 +1,67 @@
+name: edm
+
+x-service: &service
+  build: .
+  image: event-driven-microservices:local
+  restart: unless-stopped
+  depends_on:
+    nats:
+      condition: service_healthy
+  environment: &env
+    NATS_URL: nats://nats:4222
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+    OTEL_EXPORTER_OTLP_INSECURE: "true"
+
+services:
+  nats:
+    image: nats:2.11-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports: ["4222:4222", "8222:8222"]
+    volumes: [nats-data:/data]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz?js-enabled-only=true"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  jaeger:
+    image: jaegertracing/jaeger:2.5.0
+    ports: ["16686:16686"]
+
+  orders:
+    <<: *service
+    command: ["orders"]
+    ports: ["8081:8080"]
+    volumes: [orders-data:/data]
+
+  inventory:
+    <<: *service
+    command: ["inventory"]
+    ports: ["8082:8080"]
+    volumes: [inventory-data:/data]
+    environment:
+      <<: *env
+      INVENTORY_SEED: sku-keyboard=25,sku-mouse=50,sku-monitor=5,sku-gpu=1
+
+  payments:
+    <<: *service
+    command: ["payments"]
+    ports: ["8083:8080"]
+    volumes: [payments-data:/data]
+    environment:
+      <<: *env
+      PAYMENTS_DEFAULT_BALANCE_CENTS: "50000"
+      PAYMENTS_FAILURE_RATE: "${PAYMENTS_FAILURE_RATE:-0}"
+
+  notifier:
+    <<: *service
+    command: ["notifier"]
+    ports: ["8084:8080"]
+    volumes: [notifier-data:/data]
+
+volumes:
+  nats-data:
+  orders-data:
+  inventory-data:
+  payments-data:
+  notifier-data:

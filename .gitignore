@@ -1,0 +1,7 @@
+/bin/
+*.test
+*.out
+*.db
+*.db-shm
+*.db-wal
+data/
