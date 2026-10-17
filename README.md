@@ -215,6 +215,14 @@ CI runs lint, unit tests on Go 1.23 and 1.24, the integration suite against a
 NATS container **and** an embedded server, and a docker-compose end-to-end
 smoke test that also verifies the distributed trace through Jaeger's API.
 
+## Container image
+
+Multi-arch (amd64/arm64) images are published to GitHub Container Registry on every release:
+
+```bash
+docker pull ghcr.io/hoffman-alternative/event-driven-microservices:latest
+```
+
 ## License
 
 [MIT](LICENSE) © Herman Hoffman
