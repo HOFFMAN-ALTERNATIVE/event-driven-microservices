@@ -38,3 +38,16 @@ func TestExtractNilHeader(t *testing.T) {
 		t.Fatal("expected invalid span context")
 	}
 }
+
+// Regression test: after an otel upgrade the resource schema URL must match
+// the SDK's built-in resource, otherwise every service fails at startup with
+// "conflicting Schema URL".
+func TestSetupBuildsResource(t *testing.T) {
+	shutdown, err := Setup(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	if err := shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+}
