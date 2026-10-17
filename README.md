@@ -1,20 +1,14 @@
 # event-driven-microservices
 
 [![ci](https://github.com/HOFFMAN-ALTERNATIVE/event-driven-microservices/actions/workflows/ci.yml/badge.svg)](https://github.com/HOFFMAN-ALTERNATIVE/event-driven-microservices/actions/workflows/ci.yml)
-![Go](https://img.shields.io/badge/Go-1.23%2B-00ADD8?logo=go&logoColor=white)
+![Go](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)
 ![NATS](https://img.shields.io/badge/NATS-JetStream-27AAE1?logo=natsdotio&logoColor=white)
 ![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-traces-425CC7?logo=opentelemetry&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A reference architecture for **reliable event-driven microservices in Go**:
-four services (orders, inventory, payments, notifier) that coordinate an order
-**saga** purely through **NATS JetStream** events — with a **transactional
-outbox**, **idempotent consumers**, **compensating transactions**, bounded
-retries with back-off, a **dead-letter queue with replay**, and **one
-OpenTelemetry trace per order across every service and every async hop**.
+Four Go services (orders, inventory, payments, notifier) run an order saga over NATS JetStream without losing or double-applying an event when processes crash, the broker blips or messages are redelivered. The pieces that make that true: a transactional outbox, idempotent consumers with an inbox table, compensating transactions, bounded retries with jittered back-off, a dead-letter queue with replay, and one OpenTelemetry trace per order across every async hop.
 
-Everything runs with one `docker compose up`, and every failure mode below is
-proven by an integration test against a real JetStream server in CI.
+Each failure mode in the table below has an integration test against a real JetStream server in CI. Two examples: 12 concurrent orders for the last unit in stock end with exactly one confirmed, and a forced redelivery of `OrderCreated` changes nothing. `docker compose up` runs the whole system locally with Jaeger.
 
 ## Why
 
@@ -66,7 +60,7 @@ flowchart LR
 
 Each service owns its database (database-per-service, SQLite in WAL mode) and
 never calls another service synchronously. The only shared contract is
-[`internal/events`](internal/events/events.go) — envelope, subjects and
+[`internal/events`](internal/events/events.go): envelope, subjects and
 versioned payloads.
 
 ### The saga
@@ -111,15 +105,15 @@ sequences).
 
 ## Features
 
-- **Transactional outbox** ([`internal/platform/outbox`](internal/platform/outbox/outbox.go)) — events are rows written in the business transaction; a relay publishes them in commit order, waits for the JetStream `PubAck`, stops at the first failure (no reordering), backs off exponentially and prunes old rows. `Kick()` after commit gives near-zero latency without hot polling.
-- **Effectively-once processing** ([`internal/platform/messaging`](internal/platform/messaging/consumer.go)) — inbox insert + handler + follow-up outbox writes commit atomically; ack happens after commit; duplicates are acked without side effects. Business-level guards (one reservation / one payment per order) add defence in depth.
-- **Retries & DLQ** — transient errors are NAKed with `250ms·2ⁿ ± 20%` (capped) back-off; `messaging.Permanent(err)`, malformed envelopes or an exhausted attempt budget publish to `dlq.<consumer>` with `Dlq-Error`, `Dlq-Attempts`, `Dlq-Original-Subject`, `Dlq-Stream-Seq` and the original trace headers, then `TERM` the message. Server-side `MaxDeliver` is unlimited on purpose so a crash on the last attempt can never make JetStream drop a message silently. Handler panics are recovered and retried.
-- **DLQ tooling** — `dlqctl list [-consumer x]`, `dlqctl replay <seq>…`, `dlqctl replay -all`. Replays keep the event id (so idempotency still holds) but use a fresh `Nats-Msg-Id` so the de-dup window does not swallow them.
-- **Saga + compensation** — all-or-nothing reservations, release on payment failure, commit on success; full saga history per order (`GET /orders/{id}`).
-- **OpenTelemetry** — `otelhttp` server spans, producer spans per publish, consumer spans per delivery (attempt, consumer group, duplicate / dead-letter flags), trace context persisted with each outbox row and carried in NATS headers. `trace_id`/`span_id` are added to every JSON log line. OTLP/gRPC export to Jaeger in compose.
-- **Safe HTTP API** — strict JSON decoding (unknown fields rejected, 1 MiB cap), validation, `Idempotency-Key` for client retries (race-safe via a unique index), `202 Accepted` + `Location` for the async workflow, `/healthz` and `/readyz` (NATS status + outbox backlog).
-- **Invariants in the schema** — `CHECK (available >= 0)`, `CHECK (balance_cents >= 0)`: even a logic bug cannot oversell or overdraw.
-- **Ops-friendly** — idempotent stream/consumer provisioning on boot (start order irrelevant), infinite NATS reconnect, graceful shutdown that drains consumers and flushes traces, one distroless non-root image for all binaries, chaos switch `PAYMENTS_FAILURE_RATE`.
+- **Transactional outbox** ([`internal/platform/outbox`](internal/platform/outbox/outbox.go)): events are rows written in the business transaction; a relay publishes them in commit order, waits for the JetStream `PubAck`, stops at the first failure (no reordering), backs off exponentially and prunes old rows. `Kick()` after commit gives near-zero latency without hot polling.
+- **Effectively-once processing** ([`internal/platform/messaging`](internal/platform/messaging/consumer.go)): inbox insert + handler + follow-up outbox writes commit atomically; ack happens after commit; duplicates are acked without side effects. Business-level guards (one reservation / one payment per order) add defence in depth.
+- **Retries and DLQ.** Transient errors are NAKed with `250ms·2ⁿ ± 20%` (capped) back-off; `messaging.Permanent(err)`, malformed envelopes or an exhausted attempt budget publish to `dlq.<consumer>` with `Dlq-Error`, `Dlq-Attempts`, `Dlq-Original-Subject`, `Dlq-Stream-Seq` and the original trace headers, then `TERM` the message. Server-side `MaxDeliver` is unlimited on purpose so a crash on the last attempt can never make JetStream drop a message silently. Handler panics are recovered and retried.
+- **DLQ tooling.** `dlqctl list [-consumer x]`, `dlqctl replay <seq>…`, `dlqctl replay -all`. Replays keep the event id (so idempotency still holds) but use a fresh `Nats-Msg-Id` so the de-dup window does not swallow them.
+- **Saga and compensation.** All-or-nothing reservations, release on payment failure, commit on success; full saga history per order (`GET /orders/{id}`).
+- **OpenTelemetry.** `otelhttp` server spans, producer spans per publish, consumer spans per delivery (attempt, consumer group, duplicate / dead-letter flags), trace context persisted with each outbox row and carried in NATS headers. `trace_id`/`span_id` are added to every JSON log line. OTLP/gRPC export to Jaeger in compose.
+- **Safe HTTP API.** Strict JSON decoding (unknown fields rejected, 1 MiB cap), validation, `Idempotency-Key` for client retries (race-safe via a unique index), `202 Accepted` + `Location` for the async workflow, `/healthz` and `/readyz` (NATS status + outbox backlog).
+- **Invariants in the schema.** `CHECK (available >= 0)`, `CHECK (balance_cents >= 0)`: even a logic bug cannot oversell or overdraw.
+- **Operations.** Idempotent stream/consumer provisioning on boot (start order irrelevant), infinite NATS reconnect, graceful shutdown that drains consumers and flushes traces, one distroless non-root image for all binaries with a built-in `healthcheck` probe (compose runs services with a read-only root filesystem and `no-new-privileges`), HTTP server timeouts of 5 s header / 15 s read and write, 5 s deadlines on publish and ack, chaos switch `PAYMENTS_FAILURE_RATE`.
 
 ## Quick start
 
@@ -173,13 +167,15 @@ internal/dlq             DLQ list / replay
 test/integration         full-system tests against real JetStream
 ```
 
-## Design decisions & trade-offs
+## Design decisions and trade-offs
+
+ADRs: [0001 choreography with an observing state machine](docs/adr/0001-choreography-over-orchestration.md), [0002 transactional outbox](docs/adr/0002-transactional-outbox.md), [0003 SQLite per service](docs/adr/0003-sqlite-per-service.md).
 
 - **Choreography with an observing state machine** rather than a central orchestrator. Services react to facts; orders only *tracks* the saga. This keeps services decoupled and independently deployable; the cost is that the workflow is spread across handlers, which the sequence diagram above, the saga history table and distributed tracing compensate for. A dedicated orchestrator (or Temporal) becomes preferable once flows branch heavily.
 - **Outbox over "publish then commit" or 2PC.** It needs only a local transaction and gives at-least-once publishing; JetStream de-dup plus inbox tables turn that into effectively-once *effects*. Polling adds up to `Interval` latency in the worst case, which `Kick()` removes for the common path; CDC (Debezium-style log tailing) would remove polling entirely at the cost of more infrastructure.
 - **Idempotency in the consumer, not just the broker.** The de-dup window is time-bounded (2 min); the inbox is not. Both exist because each covers a different failure.
 - **SQLite per service.** Zero-ops, real ACID transactions, trivially reproducible tests, and it keeps the focus on messaging semantics. A single connection serialises writers, which matches SQLite's model. Swapping to Postgres touches only `internal/platform/db` and the SQL dialect; with multiple replicas per service, add `SELECT … FOR UPDATE SKIP LOCKED` to the relay.
-- **One `EVENTS` stream with subject-filtered durable consumers** (multi-filter consumers, NATS ≥ 2.10) instead of a stream per service — simpler retention and replay; per-domain streams are a drop-in change in `natsx` if limits need to differ.
+- **One `EVENTS` stream with subject-filtered durable consumers** (multi-filter consumers, NATS ≥ 2.10) instead of a stream per service: simpler retention and replay; per-domain streams are a drop-in change in `natsx` if limits need to differ.
 - **Client-side attempt counting + explicit DLQ** instead of JetStream `MaxDeliver` advisories: the dead-letter record carries the actual error and the trace, and nothing is ever dropped silently.
 - **Carry-forward payloads** (inventory passes customer/amount to payments) instead of synchronous lookups: no runtime coupling, at the price of slightly larger events. Payloads are versioned (`…V1`) for additive evolution.
 - **Notifier webhook inside the handler transaction** is the one non-transactional side effect; it is made safe by sending the event id as `Idempotency-Key`. 4xx → permanent (DLQ), 5xx/429/timeouts → retry.
@@ -211,9 +207,19 @@ Unit tests cover the outbox relay (ordering, stop-on-failure, atomicity,
 pruning), the consumer runner (duplicates, rollback, back-off, DLQ, panics,
 DLQ outage), trace propagation, every domain handler and the saga state machine.
 
-CI runs lint, unit tests on Go 1.23 and 1.24, the integration suite against a
+CI runs lint, govulncheck, unit tests on Go 1.26 and 1.27, the integration suite against a
 NATS container **and** an embedded server, and a docker-compose end-to-end
 smoke test that also verifies the distributed trace through Jaeger's API.
+
+## Limits
+
+- One replica per service. The outbox relay assumes a single publisher per database; running several needs `SELECT ... FOR UPDATE SKIP LOCKED` on Postgres.
+- SQLite with a single writer connection. Fine for the demo and for small services; it is not the storage engine for high write rates.
+- No authentication on the service APIs. They are meant to sit behind a gateway (see [zero-trust-gateway](https://github.com/HOFFMAN-ALTERNATIVE/zero-trust-gateway)).
+- The notifier webhook is the one side effect outside a transaction. It is safe only because receivers get the event id as `Idempotency-Key` and are expected to honour it.
+- Payments are simulated balances, not a payment provider integration.
+
+Security reporting and threat model: [SECURITY.md](SECURITY.md).
 
 ## Container image
 
@@ -225,4 +231,4 @@ docker pull ghcr.io/hoffman-alternative/event-driven-microservices:latest
 
 ## License
 
-[MIT](LICENSE) © Herman Hoffman
+[MIT](LICENSE)

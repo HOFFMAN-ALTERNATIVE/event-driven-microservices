@@ -4,6 +4,15 @@ x-service: &service
   build: .
   image: event-driven-microservices:local
   restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: ["no-new-privileges:true"]
+  # Every binary in the image has the same probe; it only checks the local port.
+  healthcheck:
+    test: ["CMD", "/usr/local/bin/orders", "healthcheck"]
+    interval: 5s
+    timeout: 3s
+    retries: 10
   depends_on:
     nats:
       condition: service_healthy
